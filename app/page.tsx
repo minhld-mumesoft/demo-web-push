@@ -1,65 +1,271 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+
+type LogEntry = { time: string; message: string; type: "info" | "success" | "error" };
+type SubInfo = { id: string; createdAt: string };
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
 
 export default function Home() {
+  const [swReady, setSwReady] = useState(false);
+  const [permission, setPermission] = useState<NotificationPermission>("default");
+  const [subscribed, setSubscribed] = useState(false);
+  const [subscriptions, setSubscriptions] = useState<SubInfo[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [title, setTitle] = useState("Hello from Web Push!");
+  const [body, setBody] = useState("This is a demo notification 🔔");
+  const [sending, setSending] = useState(false);
+
+  const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
+    const time = new Date().toLocaleTimeString();
+    setLogs((prev) => [{ time, message, type }, ...prev].slice(0, 50));
+  }, []);
+
+  const fetchSubscriptions = useCallback(async () => {
+    const res = await fetch("/api/subscriptions");
+    const data = await res.json();
+    setSubscriptions(data.subscriptions ?? []);
+  }, []);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      addLog("Web Push is not supported in this browser.", "error");
+      return;
+    }
+    setPermission(Notification.permission);
+
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then((reg) => {
+        addLog(`Service worker registered (scope: ${reg.scope})`, "success");
+        setSwReady(true);
+        return reg.pushManager.getSubscription();
+      })
+      .then((sub) => {
+        if (sub) {
+          addLog("Existing subscription found.", "info");
+          setSubscribed(true);
+        }
+      })
+      .catch((err) => addLog(`SW registration failed: ${err}`, "error"));
+
+    fetchSubscriptions();
+  }, [addLog, fetchSubscriptions]);
+
+  async function subscribe() {
+    if (!swReady) return;
+    try {
+      const perm = await Notification.requestPermission();
+      setPermission(perm);
+      if (perm !== "granted") {
+        addLog("Permission denied.", "error");
+        return;
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+      const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+
+      const res = await fetch("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+
+      if (res.ok) {
+        addLog("Subscribed successfully!", "success");
+        setSubscribed(true);
+        fetchSubscriptions();
+      } else {
+        const err = await res.json();
+        addLog(`Subscribe failed: ${err.error}`, "error");
+      }
+    } catch (err) {
+      addLog(`Subscribe error: ${err}`, "error");
+    }
+  }
+
+  async function unsubscribe() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        addLog("No active subscription.", "error");
+        return;
+      }
+
+      await fetch("/api/subscribe", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: sub.endpoint }),
+      });
+
+      await sub.unsubscribe();
+      addLog("Unsubscribed successfully.", "info");
+      setSubscribed(false);
+      fetchSubscriptions();
+    } catch (err) {
+      addLog(`Unsubscribe error: ${err}`, "error");
+    }
+  }
+
+  async function sendNotification() {
+    setSending(true);
+    try {
+      const res = await fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, body }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        addLog(`Sent to ${data.sent}/${data.total} subscriber(s). Failed: ${data.failed}`, "success");
+      } else {
+        addLog(`Send failed: ${data.error}`, "error");
+      }
+    } catch (err) {
+      addLog(`Send error: ${err}`, "error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const logColor = (type: LogEntry["type"]) => {
+    if (type === "success") return "text-green-400";
+    if (type === "error") return "text-red-400";
+    return "text-gray-300";
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <main className="min-h-screen bg-gray-950 text-white p-6">
+      <div className="max-w-2xl mx-auto space-y-6">
+        <div className="text-center">
+          <h1 className="text-3xl font-bold mb-1">🔔 Web Push Demo</h1>
+          <p className="text-gray-400 text-sm">Next.js · VAPID · In-memory subscriptions</p>
+        </div>
+
+        <div className="flex flex-wrap gap-3 justify-center">
+          <Badge label="Service Worker" ok={swReady} />
+          <Badge label="Permission" ok={permission === "granted"} text={permission} />
+          <Badge label="Subscribed" ok={subscribed} />
+          <Badge label="Subscribers" ok={subscriptions.length > 0} text={String(subscriptions.length)} />
+        </div>
+
+        <div className="bg-gray-900 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold">Subscription</h2>
+          <p className="text-sm text-gray-400">
+            Subscribe this browser to receive push notifications from the server.
           </p>
+          <div className="flex gap-3">
+            <button
+              onClick={subscribe}
+              disabled={subscribed || !swReady}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2 font-medium transition"
+            >
+              Subscribe
+            </button>
+            <button
+              onClick={unsubscribe}
+              disabled={!subscribed}
+              className="flex-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2 font-medium transition"
+            >
+              Unsubscribe
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+
+        <div className="bg-gray-900 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold">Send Notification</h2>
+          <p className="text-sm text-gray-400">
+            Broadcast a push notification to all active subscribers.
+          </p>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Notification title"
+            className="w-full bg-gray-800 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Notification body"
+            rows={2}
+            className="w-full bg-gray-800 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+          />
+          <button
+            onClick={sendNotification}
+            disabled={sending || subscriptions.length === 0}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2 font-medium transition"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            {sending ? "Sending…" : `Send to ${subscriptions.length} subscriber(s)`}
+          </button>
         </div>
-      </main>
-    </div>
+
+        {subscriptions.length > 0 && (
+          <div className="bg-gray-900 rounded-2xl p-5 space-y-2">
+            <h2 className="text-lg font-semibold">Active Subscribers</h2>
+            <div className="space-y-1">
+              {subscriptions.map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between text-sm bg-gray-800 rounded-lg px-3 py-2"
+                >
+                  <span className="font-mono text-indigo-400">{s.id}</span>
+                  <span className="text-gray-500 text-xs">
+                    {new Date(s.createdAt).toLocaleTimeString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="bg-gray-900 rounded-2xl p-5 space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Activity Log</h2>
+            <button
+              onClick={() => setLogs([])}
+              className="text-xs text-gray-500 hover:text-gray-300 transition"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="font-mono text-xs space-y-1 max-h-48 overflow-y-auto">
+            {logs.length === 0 ? (
+              <p className="text-gray-600">No activity yet.</p>
+            ) : (
+              logs.map((log, i) => (
+                <div key={i} className={logColor(log.type)}>
+                  <span className="text-gray-600">{log.time}</span> {log.message}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Badge({ label, ok, text }: { label: string; ok: boolean; text?: string }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
+        ok ? "bg-green-900/50 text-green-400" : "bg-gray-800 text-gray-400"
+      }`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${ok ? "bg-green-400" : "bg-gray-500"}`} />
+      {label}
+      {text !== undefined && <span className="opacity-70">· {text}</span>}
+    </span>
   );
 }
