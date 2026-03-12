@@ -24,6 +24,12 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000), allow notifications, and use the page to subscribe the current browser and send test push messages.
 
+## PWA Install Prompt
+
+- The page now listens for `beforeinstallprompt` and shows an **Install app** button when the browser allows manual prompting.
+- This works on Chromium-based browsers (Android/Desktop) when PWA install criteria are met.
+- On iOS Safari, the install prompt event is not emitted; users must use **Share -> Add to Home Screen**.
+
 ## Available Scripts
 
 - `npm run dev` starts the local Next.js dev server.

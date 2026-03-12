@@ -5,6 +5,13 @@ import { useEffect, useState, useCallback } from "react";
 type LogEntry = { time: string; message: string; type: "info" | "success" | "error" };
 type SubInfo = { id: string; createdAt: string };
 
+type IOSNavigator = Navigator & { standalone?: boolean };
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -21,6 +28,11 @@ export default function Home() {
   const [title, setTitle] = useState("Hello from Web Push!");
   const [body, setBody] = useState("This is a demo notification 🔔");
   const [sending, setSending] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [canInstall, setCanInstall] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [showIOSInstallBanner, setShowIOSInstallBanner] = useState(false);
 
   const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
     const time = new Date().toLocaleTimeString();
@@ -57,6 +69,50 @@ export default function Home() {
 
     fetchSubscriptions();
   }, [addLog, fetchSubscriptions]);
+
+  useEffect(() => {
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (window.navigator as IOSNavigator).standalone === true;
+
+    setIsStandalone(standalone);
+    if (standalone) {
+      setCanInstall(false);
+      return;
+    }
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+      setCanInstall(true);
+      addLog("Install prompt is ready.", "info");
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setCanInstall(false);
+      setIsStandalone(true);
+      setShowIOSInstallBanner(false);
+      addLog("App installed.", "success");
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, [addLog]);
+
+  useEffect(() => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const standalone =
+      (window.navigator as IOSNavigator).standalone === true ||
+      window.matchMedia("(display-mode: standalone)").matches;
+
+    setShowIOSInstallBanner(isIOS && !standalone);
+  }, []);
 
   async function subscribe() {
     if (!swReady) return;
@@ -139,6 +195,23 @@ export default function Home() {
     }
   }
 
+  async function installApp() {
+    if (!deferredPrompt) return;
+
+    setInstalling(true);
+    try {
+      await deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      addLog(`Install prompt result: ${outcome}`, outcome === "accepted" ? "success" : "info");
+    } catch (err) {
+      addLog(`Install prompt failed: ${err}`, "error");
+    } finally {
+      setDeferredPrompt(null);
+      setCanInstall(false);
+      setInstalling(false);
+    }
+  }
+
   const logColor = (type: LogEntry["type"]) => {
     if (type === "success") return "text-green-400";
     if (type === "error") return "text-red-400";
@@ -146,7 +219,7 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-gray-950 text-white p-6">
+    <main className="min-h-screen bg-gray-950 text-white p-6 pb-28">
       <div className="max-w-2xl mx-auto space-y-6">
         <div className="text-center">
           <h1 className="text-3xl font-bold mb-1">🔔 Web Push Demo</h1>
@@ -158,6 +231,11 @@ export default function Home() {
           <Badge label="Permission" ok={permission === "granted"} text={permission} />
           <Badge label="Subscribed" ok={subscribed} />
           <Badge label="Subscribers" ok={subscriptions.length > 0} text={String(subscriptions.length)} />
+          <Badge
+            label="Install"
+            ok={canInstall || isStandalone}
+            text={isStandalone ? "installed" : canInstall ? "ready" : "not ready"}
+          />
         </div>
 
         <div className="bg-gray-900 rounded-2xl p-5 space-y-3">
@@ -210,6 +288,20 @@ export default function Home() {
           </button>
         </div>
 
+        <div className="bg-gray-900 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold">Install App</h2>
+          <p className="text-sm text-gray-400">
+            On Android/Desktop, this uses the browser install prompt when available.
+          </p>
+          <button
+            onClick={installApp}
+            disabled={!canInstall || installing || isStandalone}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl py-2 font-medium transition"
+          >
+            {isStandalone ? "Already installed" : installing ? "Opening prompt…" : "Install app"}
+          </button>
+        </div>
+
         {subscriptions.length > 0 && (
           <div className="bg-gray-900 rounded-2xl p-5 space-y-2">
             <h2 className="text-lg font-semibold">Active Subscribers</h2>
@@ -252,6 +344,26 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {showIOSInstallBanner && (
+        <div className="fixed inset-x-4 bottom-4 z-50 rounded-2xl border border-indigo-500/30 bg-gray-900/95 p-4 shadow-2xl backdrop-blur">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-indigo-300">Install on IOS</p>
+              <p className="text-sm text-gray-200">To get notification, please add page to Home Screen</p>
+              <p className="text-xs text-gray-400">
+                Press <strong>Share</strong> -&gt; <strong>Add to Home Screen</strong>
+              </p>
+            </div>
+            <button
+              onClick={() => setShowIOSInstallBanner(false)}
+              className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
