@@ -9,6 +9,11 @@ const SW_VERSION = "v3";
 const _DB_NAME = "sw-meta";
 const _DB_STORE = "kv";
 
+import { decode as decodeV1 } from "./sw-payloads/v1.js";
+import { decode as decodeV2 } from "./sw-payloads/v2.js";
+import { decode as decodeV3 } from "./sw-payloads/v3.js";
+
+
 function _openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(_DB_NAME, 1);
@@ -103,16 +108,13 @@ async function decodePayload(raw) {
   }
 
   if (data.version === 3) {
-    const { decode } = await import("./sw-payloads/v3.js");
-    return decode(data);
+    return decodeV1(data);
   }
   if (data.version === 2) {
-    const { decode } = await import("./sw-payloads/v2.js");
-    return decode(data);
+    return decodeV2(data);
   }
   // v1 or unknown — flat format
-  const { decode } = await import("./sw-payloads/v1.js");
-  return decode(data);
+  return decodeV3(data);
 }
 
 // ─── Push handler ─────────────────────────────────────────────────────────────
