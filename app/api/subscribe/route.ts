@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addSubscription, removeSubscription } from "@/lib/subscriptionStore";
+import { addSubscription, removeSubscription, VALID_SW_VERSIONS, SwVersion } from "@/lib/subscriptionStore";
 import { PushSubscription } from "web-push";
 
 export async function POST(req: NextRequest) {
   try {
-    const subscription: PushSubscription = await req.json();
+    const body = await req.json();
+    // Extract swVersion before passing remainder as PushSubscription
+    const { swVersion: rawVersion, ...subscriptionData } = body;
+    const subscription = subscriptionData as PushSubscription;
+    const swVersion: SwVersion = VALID_SW_VERSIONS.includes(rawVersion) ? rawVersion : "v1";
+
     if (!subscription?.endpoint) {
       return NextResponse.json({ error: "Invalid subscription" }, { status: 400 });
     }
-    const stored = addSubscription(subscription);
-    return NextResponse.json({ id: stored.id, createdAt: stored.createdAt }, { status: 201 });
+    const stored = addSubscription(subscription, swVersion);
+    return NextResponse.json(
+      { id: stored.id, createdAt: stored.createdAt, swVersion: stored.swVersion },
+      { status: 201 }
+    );
   } catch {
     return NextResponse.json({ error: "Failed to subscribe" }, { status: 500 });
   }
